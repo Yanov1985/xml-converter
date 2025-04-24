@@ -8,10 +8,10 @@
         <div
           class="dropzone"
           :class="{ active: isDragging || isUploading }"
-          @dragenter="handleDragEnter"
-          @dragleave="handleDragLeave"
+          @dragenter.prevent="handleDragEnter"
+          @dragleave.prevent="handleDragLeave"
           @dragover.prevent
-          @drop="handleDrop"
+          @drop.prevent="handleDrop"
           @click="triggerFileInput"
         >
           <div v-if="!isUploading">
@@ -40,7 +40,23 @@
 
         <div v-if="error" class="file-error">
           <Icon name="i-heroicons-exclamation-triangle" /> {{ error }}
+          <div class="mt-3">
+            <UButton size="sm" @click="clearError">Попробовать снова</UButton>
+          </div>
         </div>
+
+        <UAlert
+          v-if="isVercelEnv"
+          variant="soft"
+          color="amber"
+          title="Ограничения Vercel"
+          :icon="'i-heroicons-information-circle'"
+          class="my-4"
+        >
+          На Vercel функция загрузки файлов работает в демо-режиме с
+          ограничениями. Для полноценной работы с конвертером рекомендуется
+          установить приложение локально.
+        </UAlert>
 
         <div v-if="lastUploadedFile" class="upload-result">
           <UAlert
@@ -117,20 +133,59 @@
       </div>
     </div>
 
-    <FileList @refresh="refreshFileList" />
+    <FileList
+      @refresh="refreshFileList"
+      @process="processXml"
+      @download="downloadFile"
+      @delete="deleteFile"
+      :files="files"
+      :processing="processing"
+      ref="fileListRef"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, inject, nextTick, useRuntimeConfig } from "vue";
+import { useToast } from "vue-toastification";
+import fileDownload from "js-file-download";
+import FileList from "./FileList.vue";
 
-// Компоненты UI
-const fileInput = ref(null);
-const isDragging = ref(false);
+// Состояние компонента
 const isUploading = ref(false);
-const uploadProgress = ref(0);
-const error = ref("");
+const dragover = ref(false);
+const fileInput = ref(null);
+const files = ref([]);
+const errorMessage = ref("");
+const successMessage = ref("");
+const processing = ref(false);
+const fileListRef = ref(null);
+const isVercelEnv = ref(false); // Флаг для определения среды Vercel
+
+// Инициализация сервисов
+const toast = useToast();
+const $fetch = inject("$fetch");
+
+// Последний загруженный файл
 const lastUploadedFile = ref(null);
+const error = ref("");
+const isDragging = ref(false);
+const uploadProgress = ref(0);
+
+// Проверка окружения при загрузке компонента
+onMounted(async () => {
+  try {
+    const envInfo = await $fetch("/api/check-env");
+    isVercelEnv.value = envInfo.isVercel;
+    console.log("Окружение:", envInfo);
+
+    // Загружаем список файлов при монтировании компонента
+    await refreshFileList();
+  } catch (error) {
+    console.error("Ошибка при проверке окружения:", error);
+    isVercelEnv.value = false; // По умолчанию считаем, что не в Vercel
+  }
+});
 
 // Максимальный размер загружаемого файла
 const runtimeConfig = useRuntimeConfig();
@@ -147,9 +202,19 @@ function formatFileSize(size) {
   }
 }
 
+// Очистка ошибки
+function clearError() {
+  errorMessage.value = "";
+  if (fileInput.value) {
+    fileInput.value.value = "";
+  }
+}
+
 // Открыть диалог выбора файла при клике на drop zone
 function triggerFileInput() {
-  fileInput.value.click();
+  if (fileInput.value) {
+    fileInput.value.click();
+  }
 }
 
 // Обработка событий перетаскивания
@@ -163,116 +228,209 @@ function handleDragLeave(e) {
   isDragging.value = false;
 }
 
-// Обработка события Drop
+// Обработка события Drop с улучшенной обработкой ошибок
 function handleDrop(e) {
   e.preventDefault();
-  isDragging.value = false;
+  dragover.value = false;
+  errorMessage.value = "";
 
-  const files = e.dataTransfer.files;
-  if (files.length) {
-    handleFile(files[0]);
-  }
-}
+  if (!e.dataTransfer.files.length) return;
 
-// Обработка выбора файла через input
-function handleFileChange(e) {
-  const files = e.target.files;
-  if (files.length) {
-    handleFile(files[0]);
-  }
-}
+  const file = e.dataTransfer.files[0];
 
-// Основная функция обработки файла
-function handleFile(file) {
-  // Сбрасываем предыдущие ошибки и результаты
-  error.value = "";
-  lastUploadedFile.value = null;
-
-  // Проверка типа файла
-  if (!file.name.toLowerCase().endsWith(".xml")) {
-    error.value =
-      "Выбранный файл не является XML файлом. Пожалуйста, выберите файл с расширением .xml";
-    return;
-  }
-
-  // Проверка размера файла
-  if (file.size > maxFileSize) {
-    error.value = `Файл слишком большой. Максимальный размер: ${formatFileSize(
-      maxFileSize
-    )}`;
-    return;
-  }
+  // Валидация файла
+  if (!validateFile(file)) return;
 
   // Загрузка файла
   uploadFile(file);
 }
 
-// Функция загрузки файла на сервер
-async function uploadFile(file) {
+// Проверка валидности файла
+const validateFile = (file) => {
+  // Проверка расширения файла
+  if (!file.name.toLowerCase().endsWith(".xml")) {
+    errorMessage.value = "Пожалуйста, выберите XML файл";
+    toast.error("Нужно выбрать XML файл");
+    return false;
+  }
+
+  // Проверка размера файла (максимум 5MB)
+  const maxSize = 5 * 1024 * 1024; // 5MB в байтах
+  if (file.size > maxSize) {
+    errorMessage.value = `Файл слишком большой. Максимальный размер: 5MB`;
+    toast.error("Файл слишком большой");
+    return false;
+  }
+
+  return true;
+};
+
+// Обработчик выбора файла
+function handleFileChange(e) {
+  errorMessage.value = "";
+
+  if (!e.target.files.length) return;
+
+  const file = e.target.files[0];
+
+  // Валидация файла
+  if (!validateFile(file)) {
+    e.target.value = null; // Сбрасываем input
+    return;
+  }
+
+  // Загрузка файла
+  uploadFile(file);
+  e.target.value = null; // Сбрасываем input после загрузки
+}
+
+// Загрузка файла на сервер
+const uploadFile = async (file) => {
   isUploading.value = true;
-  uploadProgress.value = 0;
+  errorMessage.value = "";
+  successMessage.value = "";
 
   try {
     const formData = new FormData();
-    formData.append("xmlFile", file);
+    formData.append("file", file);
 
-    // Эмуляция прогресса загрузки
-    const progressInterval = setInterval(() => {
-      if (uploadProgress.value < 90) {
-        uploadProgress.value += Math.random() * 10;
-      }
-    }, 300);
+    if (isVercelEnv.value) {
+      // В среде Vercel показываем предупреждение о демо-режиме
+      toast.info("В демо-режиме некоторые функции могут быть ограничены");
+    }
 
-    const response = await fetch("/api/upload", {
+    const response = await $fetch("/api/upload", {
       method: "POST",
       body: formData,
     });
 
-    clearInterval(progressInterval);
+    if (response.success) {
+      toast.success("Файл успешно загружен!");
+      successMessage.value = `Файл "${file.name}" успешно загружен!`;
 
-    // Проверка ответа
-    if (!response.ok) {
-      let errorMessage;
-      try {
-        const errorData = await response.json();
-        errorMessage = errorData.statusMessage || "Ошибка при загрузке файла";
-      } catch (e) {
-        errorMessage = `Ошибка сервера: ${response.status} ${response.statusText}`;
-      }
-      throw new Error(errorMessage);
+      // Обновляем список файлов после успешной загрузки
+      await refreshFileList();
+    } else {
+      throw new Error(response.error || "Неизвестная ошибка");
     }
-
-    // Обработка успешного ответа
-    uploadProgress.value = 100;
-    const result = await response.json();
-
-    // Сохраняем информацию о загруженном файле
-    lastUploadedFile.value = result;
-
-    // Обновляем список файлов
-    refreshFileList();
-  } catch (err) {
-    error.value = err.message || "Произошла ошибка при загрузке файла";
-    console.error("Ошибка загрузки:", err);
-
-    // Добавляем больше информации для отладки
-    if (err.stack) {
-      console.error("Стек ошибки:", err.stack);
-    }
+  } catch (error) {
+    console.error("Ошибка загрузки:", error);
+    errorMessage.value = error.message || "Произошла ошибка при загрузке файла";
+    toast.error(errorMessage.value);
   } finally {
-    setTimeout(() => {
-      isUploading.value = false;
-      // Сбрасываем input для возможности повторной загрузки того же файла
-      if (fileInput.value) {
-        fileInput.value.value = "";
-      }
-    }, 500);
+    isUploading.value = false;
   }
+};
+
+// Функция для обновления списка файлов
+const refreshFileList = async () => {
+  try {
+    const response = await $fetch("/api/files");
+    files.value = response.files || [];
+  } catch (error) {
+    console.error("Ошибка при загрузке списка файлов:", error);
+    files.value = [];
+    toast.error("Не удалось загрузить список файлов");
+  }
+};
+
+// Обработка XML файла
+const processXml = async (file) => {
+  if (!file || !file.name) {
+    toast.error("Не указан файл для обработки");
+    return;
+  }
+
+  processing.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await $fetch("/api/process", {
+      method: "POST",
+      body: {
+        filename: file.name,
+      },
+    });
+
+    if (response.success) {
+      toast.success("Файл успешно обработан!");
+
+      // Обновляем список файлов после обработки
+      await refreshFileList();
+    } else {
+      throw new Error(response.error || "Ошибка при обработке файла");
+    }
+  } catch (error) {
+    console.error("Ошибка обработки:", error);
+    errorMessage.value = error.message || "Произошла ошибка при обработке XML";
+    toast.error(errorMessage.value);
+  } finally {
+    processing.value = false;
+  }
+};
+
+// Скачивание файла
+const downloadFile = async (file) => {
+  if (!file || !file.path) {
+    toast.error("Не указан файл для скачивания");
+    return;
+  }
+
+  try {
+    const response = await $fetch(
+      `/api/download?filePath=${encodeURIComponent(file.path)}`,
+      {
+        responseType: "blob",
+      }
+    );
+
+    fileDownload(response, file.name);
+    toast.success("Файл успешно скачан!");
+  } catch (error) {
+    console.error("Ошибка скачивания:", error);
+    toast.error("Ошибка при скачивании файла");
+  }
+};
+
+// Удаление файла
+const deleteFile = async (file) => {
+  if (!file || !file.path) {
+    toast.error("Не указан файл для удаления");
+    return;
+  }
+
+  try {
+    const response = await $fetch("/api/delete", {
+      method: "DELETE",
+      body: {
+        filePath: file.path,
+      },
+    });
+
+    if (response.success) {
+      toast.success("Файл успешно удален!");
+      await refreshFileList();
+    } else {
+      throw new Error(response.error || "Ошибка при удалении файла");
+    }
+  } catch (error) {
+    console.error("Ошибка удаления:", error);
+    toast.error("Ошибка при удалении файла");
+  }
+};
+</script>
+
+<style scoped>
+.dropzone {
+  position: relative;
+  z-index: 1;
 }
 
-// Метод для обновления списка файлов в дочернем компоненте
-function refreshFileList() {
-  // Этот метод будет вызывать метод refresh в компоненте FileList
-  // Реализация через emit в дочернем компоненте
+.file-error {
+  margin-top: 15px;
+  padding: 12px;
+  background-color: rgba(var(--danger-color-rgb, 220, 53, 69), 0.1);
+  border-radius: 6px;
+  color: var(--danger-color, #dc3545);
 }
-</script>
+</style>

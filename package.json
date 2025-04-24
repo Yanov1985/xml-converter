@@ -7,7 +7,9 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "predeploy": "npm run generate",
+    "deploy": "gh-pages -d .output/public"
   },
   "dependencies": {
     "@nuxt/ui": "^2.15.0",
@@ -15,9 +17,12 @@
     "vue": "^3.5.13",
     "vue-router": "^4.5.0",
     "xml2js": "^0.6.2",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "vue-toastification": "^2.0.0-rc.5",
+    "js-file-download": "^0.4.12"
   },
   "devDependencies": {
-    "@types/node": "^20.11.30"
+    "@types/node": "^20.11.30",
+    "gh-pages": "^6.1.1"
   }
 }

@@ -1,173 +1,472 @@
 <template>
-  <div class="card">
-    <div class="card-header">
-      <div class="header-with-controls">
-        <h2 class="card-title">Конвертированные файлы</h2>
-        <UButton
-          icon="i-heroicons-arrow-path"
-          color="primary"
-          variant="ghost"
-          size="sm"
-          :loading="isLoading"
-          @click="loadFiles"
-        >
-          Обновить
-        </UButton>
-      </div>
-    </div>
-    <div class="card-body">
-      <div v-if="isLoading" class="loading-indicator">
-        <ULoader />
-        <p>Загрузка списка файлов...</p>
-      </div>
-
-      <UAlert
-        v-if="isDemoMode"
-        variant="soft"
-        color="amber"
-        title="Вы используете демо-режим Vercel"
-        :icon="'i-heroicons-information-circle'"
-        class="mb-4"
+  <div class="file-list-container">
+    <div class="file-list-header">
+      <h2>Список файлов</h2>
+      <button
+        class="refresh-button"
+        @click="emit('refresh')"
+        :disabled="loading"
+        title="Обновить список файлов"
       >
-        В демо-режиме отображаются тестовые файлы. Для полноценной работы
-        установите приложение локально.
-      </UAlert>
+        <span class="refresh-icon" :class="{ refreshing: loading }">🔄</span>
+        <span class="button-text">Обновить</span>
+      </button>
+    </div>
 
-      <div v-else-if="error" class="file-error">
-        <Icon name="i-heroicons-exclamation-triangle" />
-        {{ error }}
-        <div class="mt-3">
-          <UButton size="sm" @click="loadFiles">Попробовать снова</UButton>
-        </div>
-      </div>
+    <div v-if="isDemo" class="demo-mode-alert">
+      <strong>Демо-режим:</strong> В этом режиме показаны примеры файлов.
+      Функции загрузки и обработки ограничены.
+    </div>
 
-      <div v-else-if="fileGroups.length === 0" class="no-files-message">
-        <Icon name="i-heroicons-document-text" size="xl" class="mb-3" />
-        <h3>Нет конвертированных файлов</h3>
-        <p>Загрузите XML файл для конвертации</p>
-      </div>
+    <div v-if="loading" class="loading-indicator">
+      <div class="spinner"></div>
+      <span>Загрузка списка файлов...</span>
+    </div>
 
-      <div v-else class="file-list">
-        <div v-for="group in fileGroups" :key="group.id" class="file-item">
-          <div class="file-item-header">
-            <h3>{{ group.originalName }}</h3>
-            <span class="file-info">{{ formatDate(group.date) }}</span>
-          </div>
-          <div class="file-item-body">
-            <a
-              v-if="group.files.csv"
-              :href="group.files.csv.downloadUrl"
-              class="download-link csv"
-              download
-            >
-              <Icon name="i-heroicons-document-text" />
-              Скачать CSV
-            </a>
-            <a
-              v-if="group.files.xlsx"
-              :href="group.files.xlsx.downloadUrl"
-              class="download-link xlsx"
-              download
-            >
-              <Icon name="i-heroicons-table-cells" />
-              Скачать Excel
-            </a>
-            <a
-              v-if="group.files.html"
-              :href="group.files.html.downloadUrl"
-              target="_blank"
-              class="download-link html"
-            >
-              <Icon name="i-heroicons-globe-alt" />
-              Открыть в браузере
-            </a>
-          </div>
-        </div>
-      </div>
+    <div v-else-if="files.length === 0" class="empty-list">
+      <p>Нет доступных файлов</p>
+      <p class="empty-list-hint">Загрузите файлы XML для начала работы</p>
+    </div>
+
+    <div v-else class="files-table-container">
+      <table class="files-table">
+        <thead>
+          <tr>
+            <th>Тип</th>
+            <th>Имя файла</th>
+            <th>Размер</th>
+            <th>Дата изменения</th>
+            <th>Действия</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="file in files"
+            :key="file.path"
+            :class="getRowClass(file.name)"
+          >
+            <td class="file-icon">{{ getFileIcon(file.name) }}</td>
+            <td class="file-name">{{ file.name }}</td>
+            <td class="file-size">{{ formatFileSize(file.size) }}</td>
+            <td class="file-date">{{ formatDate(file.mtime) }}</td>
+            <td class="file-actions">
+              <!-- Кнопки действий в зависимости от типа файла -->
+              <template v-if="file.name.toLowerCase().endsWith('.xml')">
+                <button
+                  class="action-button process-button"
+                  @click="processFile(file)"
+                  title="Обработать XML файл"
+                >
+                  ⚙️
+                </button>
+              </template>
+
+              <button
+                class="action-button download-button"
+                @click="downloadFile(file)"
+                title="Скачать файл"
+              >
+                ⬇️
+              </button>
+
+              <button
+                class="action-button delete-button"
+                @click="deleteFile(file)"
+                title="Удалить файл"
+              >
+                🗑️
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, defineEmits, defineProps } from "vue";
+import { useToast } from "vue-toastification";
+
+// Определяем входные пропсы компонента
+const props = defineProps({
+  files: {
+    type: Array,
+    default: () => [],
+  },
+  processing: {
+    type: Boolean,
+    default: false,
+  },
+});
+
+// Получаем доступ к системе уведомлений
+const toast = useToast();
+
+// Определяем события, которые компонент может излучать
+const emit = defineEmits(["refresh", "process", "download", "delete"]);
 
 // Состояние компонента
-const isLoading = ref(false);
-const error = ref("");
-const fileGroups = ref([]);
-const isDemoMode = ref(false);
+const loading = ref(false);
+const isDemo = ref(false);
 
-// Загрузка списка файлов при монтировании компонента
+// Загрузка списка файлов с сервера
+const loadFiles = async () => {
+  try {
+    loading.value = true;
+    const response = await fetch("/api/files");
+
+    if (!response.ok) {
+      throw new Error(`Ошибка HTTP: ${response.status}`);
+    }
+
+    const data = await response.json();
+    // files теперь передаются через пропсы
+    // files.value = data.files || [];
+    isDemo.value = data.isDemo || false;
+
+    if (isDemo.value) {
+      toast.info("Работаем в демо-режиме. Некоторые функции ограничены.");
+    }
+
+    // Отправляем результат загрузки родительскому компоненту
+    emit("refresh", data.files || []);
+  } catch (error) {
+    console.error("Ошибка при загрузке списка файлов:", error);
+    toast.error(`Не удалось загрузить список файлов: ${error.message}`);
+    emit("refresh", []);
+  } finally {
+    loading.value = false;
+  }
+};
+
+// Обработка XML файла
+const processFile = async (file) => {
+  try {
+    if (!file || !file.path) {
+      throw new Error("Некорректный файл для обработки");
+    }
+
+    emit("process", file);
+  } catch (error) {
+    console.error("Ошибка при обработке файла:", error);
+    toast.error(`Не удалось обработать файл: ${error.message}`);
+  }
+};
+
+// Скачивание файла
+const downloadFile = async (file) => {
+  try {
+    if (!file || !file.path) {
+      throw new Error("Некорректный файл для скачивания");
+    }
+
+    emit("download", file);
+  } catch (error) {
+    console.error("Ошибка при скачивании файла:", error);
+    toast.error(`Не удалось скачать файл: ${error.message}`);
+  }
+};
+
+// Удаление файла
+const deleteFile = async (file) => {
+  try {
+    if (!file || !file.path) {
+      throw new Error("Некорректный файл для удаления");
+    }
+
+    if (confirm(`Вы уверены, что хотите удалить файл "${file.name}"?`)) {
+      emit("delete", file);
+    }
+  } catch (error) {
+    console.error("Ошибка при удалении файла:", error);
+    toast.error(`Не удалось удалить файл: ${error.message}`);
+  }
+};
+
+// Форматирование даты
+const formatDate = (timestamp) => {
+  if (!timestamp) return "Нет данных";
+
+  const date = new Date(timestamp);
+
+  // Проверяем корректность даты
+  if (isNaN(date.getTime())) return "Некорректная дата";
+
+  return date.toLocaleString("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+};
+
+// Форматирование размера файла
+const formatFileSize = (sizeInBytes) => {
+  if (!sizeInBytes || isNaN(parseInt(sizeInBytes))) return "Нет данных";
+
+  sizeInBytes = parseInt(sizeInBytes);
+
+  if (sizeInBytes < 1024) {
+    return `${sizeInBytes} B`;
+  } else if (sizeInBytes < 1024 * 1024) {
+    return `${(sizeInBytes / 1024).toFixed(2)} KB`;
+  } else if (sizeInBytes < 1024 * 1024 * 1024) {
+    return `${(sizeInBytes / (1024 * 1024)).toFixed(2)} MB`;
+  } else {
+    return `${(sizeInBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+};
+
+// Определение типа файла по расширению и возврат иконки
+const getFileIcon = (fileName) => {
+  if (!fileName) return "📄";
+
+  const extension = fileName.split(".").pop().toLowerCase();
+
+  switch (extension) {
+    case "xml":
+      return "📋";
+    case "csv":
+      return "📊";
+    case "xlsx":
+      return "📈";
+    case "html":
+      return "🌐";
+    default:
+      return "📄";
+  }
+};
+
+// Получение класса стиля для строки таблицы в зависимости от типа файла
+const getRowClass = (fileName) => {
+  if (!fileName) return "";
+
+  const extension = fileName.split(".").pop().toLowerCase();
+
+  switch (extension) {
+    case "xml":
+      return "file-row-xml";
+    case "csv":
+      return "file-row-csv";
+    case "xlsx":
+      return "file-row-xlsx";
+    case "html":
+      return "file-row-html";
+    default:
+      return "";
+  }
+};
+
+// При монтировании компонента загружаем список файлов
 onMounted(() => {
   loadFiles();
 });
 
-// Функция для форматирования даты
-function formatDate(dateString) {
-  const date = new Date(dateString);
-  return new Intl.DateTimeFormat("ru-RU", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
+// Метод для обновления списка файлов (может быть вызван из родительского компонента)
+const refreshFileList = () => {
+  loadFiles();
+};
 
-// Загрузка списка файлов с сервера
-async function loadFiles() {
-  isLoading.value = true;
-  error.value = "";
-
-  try {
-    const response = await fetch("/api/files");
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(
-        errorData.statusMessage || "Ошибка при загрузке списка файлов"
-      );
-    }
-
-    const result = await response.json();
-    fileGroups.value = result.groups || [];
-    isDemoMode.value = result.isDemo || false;
-  } catch (err) {
-    error.value = err.message || "Произошла ошибка при загрузке списка файлов";
-    console.error("Ошибка загрузки файлов:", err);
-  } finally {
-    isLoading.value = false;
-  }
-}
-
-// Экспортируем методы для родительского компонента
+// Экспортируем методы для использования извне
 defineExpose({
-  refresh: loadFiles,
+  refreshFileList,
 });
 </script>
 
 <style scoped>
-.header-with-controls {
+.file-list-container {
+  width: 100%;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background-color: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.file-list-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.file-list-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: #333;
+}
+
+.refresh-button {
+  display: flex;
+  align-items: center;
+  background-color: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.refresh-button:hover {
+  background-color: #e9e9e9;
+}
+
+.refresh-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.refresh-icon {
+  display: inline-block;
+  margin-right: 0.5rem;
+}
+
+.refreshing {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.demo-mode-alert {
+  background-color: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 4px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  color: #856404;
 }
 
 .loading-indicator {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  padding: 40px 0;
-}
-
-.loading-indicator p {
-  margin-top: 10px;
+  justify-content: center;
+  padding: 2rem;
   color: #666;
 }
 
-.file-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.spinner {
+  border: 3px solid rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  border-top: 3px solid #3498db;
+  width: 20px;
+  height: 20px;
+  animation: spin 1s linear infinite;
+  margin-right: 0.75rem;
+}
+
+.empty-list {
+  text-align: center;
+  padding: 2rem;
+  color: #666;
+}
+
+.empty-list-hint {
+  font-size: 0.9rem;
+  color: #999;
+  margin-top: 0.5rem;
+}
+
+.files-table-container {
+  overflow-x: auto;
+}
+
+.files-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.files-table th {
+  background-color: #f5f5f5;
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 2px solid #ddd;
+  font-weight: 600;
+}
+
+.files-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid #eee;
+}
+
+.file-icon {
+  text-align: center;
+  font-size: 1.2rem;
+}
+
+.file-name {
+  font-weight: 500;
+  color: #2c3e50;
+  word-break: break-all;
+}
+
+.file-size,
+.file-date {
+  color: #666;
+  white-space: nowrap;
+}
+
+.file-actions {
+  white-space: nowrap;
+  text-align: center;
+}
+
+.action-button {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  margin: 0 0.25rem;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.action-button:hover {
+  background-color: #f5f5f5;
+}
+
+.process-button:hover {
+  background-color: #e8f4fd;
+}
+
+.download-button:hover {
+  background-color: #e8f8e8;
+}
+
+.delete-button:hover {
+  background-color: #fee;
+}
+
+/* Стили для строк разных типов файлов */
+.file-row-xml {
+  background-color: #f8fdff;
+}
+
+.file-row-csv {
+  background-color: #f8fff8;
+}
+
+.file-row-xlsx {
+  background-color: #fffdf8;
+}
+
+.file-row-html {
+  background-color: #fff8fd;
 }
 </style>

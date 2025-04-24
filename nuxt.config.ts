@@ -13,7 +13,9 @@ export default defineNuxtConfig({
       link: [
         { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' }
       ]
-    }
+    },
+    baseURL: process.env.NODE_ENV === 'production' ? '/service-project/' : '/',
+    buildAssetsDir: '/assets/',
   },
   modules: [
     '@nuxt/ui'
@@ -29,5 +31,8 @@ export default defineNuxtConfig({
     public: {
       maxUploadSize: 10 * 1024 * 1024 // 10 МБ по умолчанию
     }
+  },
+  nitro: {
+    preset: 'github-pages',
   }
 })

@@ -3,112 +3,171 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { createReadStream } from 'fs';
 import { stat } from 'fs/promises';
+import { isVercel, getBasePath } from '../utils/environment';
 
-// Путь к папке с конвертированными файлами
-const isVercel = process.env.VERCEL === '1';
-const OUTPUT_DIR = isVercel
-  ? path.join('/tmp', 'converted')
-  : path.resolve(process.cwd(), '../converted');
+// Пути к директориям
+const basePath = getBasePath();
+const XML_DIR = path.join(basePath, 'xml');
+const CONVERTED_DIR = path.join(basePath, 'converted');
 
-// API-обработчик для скачивания конвертированных файлов
+// API-обработчик для скачивания файлов
 export default defineEventHandler(async (event) => {
   try {
-    // Получаем параметр запроса (имя файла)
+    // Получаем параметры запроса
     const query = getQuery(event);
-    const fileName = query.file as string;
+    let filePath = query.filePath as string;
+    let fileName = query.file as string;
 
-    if (!fileName) {
+    // Проверяем, что указан путь к файлу или имя файла
+    if (!filePath && !fileName) {
       return createError({
         statusCode: 400,
-        statusMessage: 'Не указано имя файла'
+        statusMessage: 'Не указан путь к файлу или имя файла'
       });
     }
 
-    // Предотвращаем path traversal атаки
-    const sanitizedFileName = path.basename(fileName);
-    const filePath = path.join(OUTPUT_DIR, sanitizedFileName);
+    // Если указано только имя файла, пытаемся найти его в директориях
+    if (!filePath && fileName) {
+      // Предотвращаем path traversal атаки
+      fileName = path.basename(fileName);
 
-    // В Vercel среде, если это демо-режим, создаем файл на лету
-    if (isVercel) {
-      // Проверяем существование директории
+      // Проверяем в директории конвертированных файлов
+      const convertedPath = path.join(CONVERTED_DIR, fileName);
       try {
-        await fs.mkdir(OUTPUT_DIR, { recursive: true });
-      } catch (error) {
-        console.error('Ошибка при создании директории:', error);
+        await fs.access(convertedPath);
+        filePath = convertedPath;
+      } catch {
+        // Проверяем в директории исходных файлов
+        const xmlPath = path.join(XML_DIR, fileName);
+        try {
+          await fs.access(xmlPath);
+          filePath = xmlPath;
+        } catch {
+          // Файл не найден в обеих директориях
+        }
+      }
+    }
+
+    // В демо-режиме Vercel создаем демо-файлы на лету
+    if (isVercel()) {
+      if (!fileName && filePath) {
+        fileName = path.basename(filePath);
       }
 
-      // Определяем тип файла и создаем демо-содержимое
-      const ext = path.extname(sanitizedFileName).toLowerCase();
+      // Предотвращаем path traversal атаки
+      fileName = path.basename(fileName || '');
 
+      if (!fileName) {
+        return createError({
+          statusCode: 400,
+          statusMessage: 'Не удалось определить имя файла'
+        });
+      }
+
+      // Определяем директорию для файла
+      let outputDir = CONVERTED_DIR;
+      if (fileName.toLowerCase().endsWith('.xml')) {
+        outputDir = XML_DIR;
+      }
+
+      // Создаем директорию, если не существует
+      await fs.mkdir(outputDir, { recursive: true });
+
+      // Полный путь к файлу
+      filePath = path.join(outputDir, fileName);
+
+      // Определяем тип файла и создаем демо-содержимое
+      const ext = path.extname(fileName).toLowerCase();
+
+      // Создаем демо-файл в зависимости от типа
       if (ext === '.csv') {
-        await fs.writeFile(filePath, 'id,name,price,description\n1,Демо продукт,1000,"Это демо-файл для Vercel"');
+        await fs.writeFile(filePath, 'id,name,value\n1,"Демо элемент","Демо значение"');
       } else if (ext === '.xlsx') {
-        // Для Excel просто создаем пустой файл, т.к. мы не можем создать настоящий Excel без библиотеки
-        await fs.writeFile(filePath, 'Это демо-файл Excel для Vercel');
+        // Просто пустой файл для демонстрации
+        await fs.writeFile(filePath, 'Демо Excel файл');
       } else if (ext === '.html') {
         await fs.writeFile(filePath, `
           <!DOCTYPE html>
           <html>
           <head>
             <meta charset="UTF-8">
-            <title>Демо-файл для Vercel</title>
+            <title>Демо XML в HTML</title>
             <style>
-              body { font-family: Arial; margin: 20px; }
+              body { font-family: Arial; }
               table { border-collapse: collapse; width: 100%; }
-              th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              th, td { border: 1px solid #ddd; padding: 8px; }
               th { background-color: #f2f2f2; }
             </style>
           </head>
           <body>
-            <h1>Демо-таблица для Vercel</h1>
-            <p>Это демонстрационный HTML-файл, сгенерированный в среде Vercel.</p>
+            <h1>Демо-таблица</h1>
             <table>
-              <tr><th>ID</th><th>Название</th><th>Цена</th><th>Описание</th></tr>
-              <tr><td>1</td><td>Демо продукт 1</td><td>1000 руб.</td><td>Описание продукта 1</td></tr>
-              <tr><td>2</td><td>Демо продукт 2</td><td>2000 руб.</td><td>Описание продукта 2</td></tr>
-              <tr><td>3</td><td>Демо продукт 3</td><td>3000 руб.</td><td>Описание продукта 3</td></tr>
+              <tr><th>ID</th><th>Название</th><th>Значение</th></tr>
+              <tr><td>1</td><td>Демо элемент</td><td>Демо значение</td></tr>
             </table>
           </body>
           </html>
         `);
+      } else if (ext === '.xml') {
+        await fs.writeFile(filePath, '<?xml version="1.0" encoding="UTF-8"?>\n<root><item>Демо-данные для Vercel</item></root>');
+      } else {
+        await fs.writeFile(filePath, 'Демо файл');
       }
     }
 
-    // Проверяем, существует ли файл
-    try {
-      const fileStat = await stat(filePath);
-
-      if (!fileStat.isFile()) {
-        return createError({
-          statusCode: 404,
-          statusMessage: 'Файл не найден'
-        });
-      }
-    } catch (error) {
+    // Проверяем, существует ли файл после всех попыток его найти или создать
+    if (!filePath) {
       return createError({
         statusCode: 404,
         statusMessage: 'Файл не найден'
       });
     }
 
-    // Определяем MIME-тип файла в зависимости от расширения
+    try {
+      const fileStat = await stat(filePath);
+
+      if (!fileStat.isFile()) {
+        return createError({
+          statusCode: 404,
+          statusMessage: 'По указанному пути не найден файл'
+        });
+      }
+    } catch (error) {
+      return createError({
+        statusCode: 404,
+        statusMessage: 'Файл не найден или недоступен'
+      });
+    }
+
+    // Если имя файла не определено, используем basename от пути
+    if (!fileName) {
+      fileName = path.basename(filePath);
+    }
+
+    // Определяем MIME-тип в зависимости от расширения файла
     let contentType = 'application/octet-stream';
-    if (fileName.endsWith('.csv')) {
+    const extension = path.extname(fileName).toLowerCase();
+
+    if (extension === '.csv') {
       contentType = 'text/csv';
-    } else if (fileName.endsWith('.xlsx')) {
+    } else if (extension === '.xlsx') {
       contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    } else if (fileName.endsWith('.html')) {
+    } else if (extension === '.html') {
       contentType = 'text/html';
+    } else if (extension === '.xml') {
+      contentType = 'application/xml';
     }
 
     // Устанавливаем заголовки ответа
     event.node.res.setHeader('Content-Type', contentType);
-    event.node.res.setHeader('Content-Disposition', `attachment; filename="${sanitizedFileName}"`);
 
-    // Создаем поток чтения файла и отправляем файл
-    const fileStream = createReadStream(filePath);
-    return sendStream(event, fileStream);
+    // Для файлов, которые должны скачиваться, а не открываться в браузере
+    if (extension !== '.html') {
+      event.node.res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    }
 
+    // Отправляем файл
+    return sendStream(event, createReadStream(filePath));
   } catch (error) {
     console.error('Ошибка при скачивании файла:', error);
 
