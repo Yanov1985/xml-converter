@@ -1,0 +1,12 @@
+{
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "framework": "nuxt",
+  "outputDirectory": ".output/public",
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/"
+    }
+  ]
+}
