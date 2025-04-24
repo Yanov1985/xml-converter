@@ -52,16 +52,28 @@
           />
 
           <UAlert
-            v-if="lastUploadedFile.isDemo"
+            v-if="lastUploadedFile && lastUploadedFile.isDemo"
             variant="soft"
             color="amber"
             title="Вы используете демо-режим Vercel"
             :icon="'i-heroicons-information-circle'"
             class="mb-4"
           >
-            В демо-режиме Vercel настоящая конвертация невозможна из-за
-            ограничений серверлесс-функций. Загрузка работает, но возвращаются
-            примеры файлов.
+            <p>
+              В демо-режиме Vercel настоящая конвертация XML невозможна из-за
+              ограничений серверлесс-функций.
+            </p>
+            <p>
+              Загрузка работает, но файлы создаются автоматически как
+              демонстрационные примеры.
+            </p>
+            <p>Для полноценной работы установите приложение локально.</p>
+            <details>
+              <summary>Техническая информация</summary>
+              <pre class="text-xs mt-2 p-2 bg-gray-100 rounded">{{
+                JSON.stringify(lastUploadedFile, null, 2)
+              }}</pre>
+            </details>
           </UAlert>
 
           <div class="file-item">
@@ -220,8 +232,14 @@ async function uploadFile(file) {
 
     // Проверка ответа
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.statusMessage || "Ошибка при загрузке файла");
+      let errorMessage;
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.statusMessage || "Ошибка при загрузке файла";
+      } catch (e) {
+        errorMessage = `Ошибка сервера: ${response.status} ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
     }
 
     // Обработка успешного ответа
@@ -236,6 +254,11 @@ async function uploadFile(file) {
   } catch (err) {
     error.value = err.message || "Произошла ошибка при загрузке файла";
     console.error("Ошибка загрузки:", err);
+
+    // Добавляем больше информации для отладки
+    if (err.stack) {
+      console.error("Стек ошибки:", err.stack);
+    }
   } finally {
     setTimeout(() => {
       isUploading.value = false;
